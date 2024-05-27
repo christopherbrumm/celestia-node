@@ -2,7 +2,13 @@ package getters
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io/ioutil"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -240,6 +246,42 @@ func TestIPLDGetter(t *testing.T) {
 	})
 }
 
+func TestKYVEGetter(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	// Initialise KYVE Getter with Trustless API endpoint (to retrieve the data) and node endpoint (to verify data integrity)
+	kg := NewKYVEGetter("https://data.services.kyve.network/", "https://api.korellia.kyve.network")
+
+	t.Run("GetSharesByNamespace", func(t *testing.T) {
+		// Read JSON data from a file
+		data, err := ioutil.ReadFile("header.json")
+		if err != nil {
+			fmt.Println("Error reading file:", err)
+			return
+		}
+
+		var eh header.ExtendedHeader
+
+		// Unmarshal JSON data into the struct variable
+		err = json.Unmarshal(data, &eh)
+		require.NoError(t, err)
+
+		// Create namespace that is supported by KYVE
+		// TODO: Create namespace for namespaceId = "AAAAAAAAAAAAAAAAAAAAAAAAAIZiad33fbxA7Z0="
+		namespace, err := parseV0Namespace("2650")
+		require.NoError(t, err)
+
+		// first check that shares are returned correctly if they exist
+		_, err = kg.GetSharesByNamespace(ctx, &eh, namespace)
+		require.NoError(t, err)
+		// require.NoError(t, shares.Verify(eh.DAH, namespace))
+
+		//// namespace not found
+		// TODO
+	})
+}
+
 // BenchmarkIPLDGetterOverBusyCache benchmarks the performance of the IPLDGetter when the
 // cache size of the underlying blockstore is less than the number of blocks being requested in
 // parallel. This is to ensure performance doesn't degrade when the cache is being frequently
@@ -309,6 +351,36 @@ func BenchmarkIPLDGetterOverBusyCache(b *testing.B) {
 		}()
 	}
 	g.Wait()
+}
+
+// DecodeToBytes decodes a Base64 or hex input string into a byte slice.
+func DecodeToBytes(param string) ([]byte, error) {
+	if strings.HasPrefix(param, "0x") {
+		decoded, err := hex.DecodeString(param[2:])
+		if err != nil {
+			return nil, fmt.Errorf("error decoding namespace ID: %w", err)
+		}
+		return decoded, nil
+	}
+	// otherwise, it's just a base64 string
+	decoded, err := base64.StdEncoding.DecodeString(param)
+	if err != nil {
+		return nil, fmt.Errorf("error decoding namespace ID: %w", err)
+	}
+	return decoded, nil
+}
+
+// ParseV0Namespace parses a namespace from a base64 or hex string. The param
+// is expected to be the user-specified portion of a v0 namespace ID (i.e. the
+// last 10 bytes).
+func parseV0Namespace(param string) (share.Namespace, error) {
+	userBytes, err := DecodeToBytes(param)
+	if err != nil {
+		return nil, err
+	}
+
+	// if the namespace ID is <= 10 bytes, left pad it with 0s
+	return share.NewBlobNamespaceV0(userBytes)
 }
 
 func randomEDS(t *testing.T) (*rsmt2d.ExtendedDataSquare, *header.ExtendedHeader) {
